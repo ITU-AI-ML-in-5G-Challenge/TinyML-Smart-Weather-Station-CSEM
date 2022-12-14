@@ -1,0 +1,5 @@
+
+	
+[submodule "Code/MAX78000FTHR/tinyml_acquire_sensors/BME280/BME280_driver"]
+	path = Code/MAX78000FTHR/tinyml_acquire_sensors/BME280/BME280_driver
+	url = https://github.com/BoschSensortec/BME280_driver.git
