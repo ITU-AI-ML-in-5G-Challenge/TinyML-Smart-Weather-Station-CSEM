@@ -1,8 +1,9 @@
 """""
- *  \brief     Python script used for ML training
- *  \author    Jonathan Reymond, Robin Berguerand, Jona Beysens
+ *  \brief     convert_pcm_wav.py
+ *  \details   Python script to convert recorded PCM file by the MAX78000FTHR to a WAV file
+ *  \author    Jona Beysens
  *  \version   1.0
- *  \date      2022-11-14
+ *  \date      2022-07-29
  *  \pre       None
  *  \copyright (c) 2022 CSEM
  *
@@ -30,7 +31,8 @@ import array
 import pandas as pd
 from constants import *
 import multiprocessing
-
+import numpy as np
+from scipy.io import wavfile
 
 
 #### constants to adapt ####
@@ -42,7 +44,7 @@ sample_width = 2 # in bytes
 num_frames = 0 # number of frames in the file (will be changed automatically when data is written to a wav file)
 bme_sensor_size = 3 * 8 # temperature, pressure, temperature stored using 8 bytes
 
-
+test = "test_"
 ### constants : do not change ####
 
 def extract_bme_sensor_data(start_index, pcmdata):
@@ -75,27 +77,36 @@ def process_pcm(idx, path_pcm):
             start_index_arr =  int((start_index - 4 * (j + 1))/ 2)
             timestamps.append(timestamp)
             #Extract audio
-            for i in range(int(SAMPLING_FREQUENCY * sample_duration)): # don't multiply by sample width, because in loop width of sample is handled
+            for i in range(0, int(SAMPLING_FREQUENCY * sample_duration)): # don't multiply by sample width, because in loop width of sample is handled
                 value =     pcmdata[start_index + 2*i       ] << 8
                 value +=    pcmdata[start_index + 2*i + 1  ]
                 if(value>2**15 - 1):
                     value = -(2**16 - value)
                 convert_data.append(value)
+
             #Extract BME sensor data
             sensor_start_index = start_index + int(SAMPLING_FREQUENCY * sample_duration) * 2
             row_bme_sensor = extract_bme_sensor_data(sensor_start_index, pcmdata)
             bme_sensor_data.append(row_bme_sensor)
 
-
+        
         data = b''.join((wave.struct.pack('h', item) for item in convert_data if item ))
         print(f"length of data : {len(data)}")
 
  
     wave_filename = get_filename(idx, '.wav')
     print(wave_filename)
-    with wave.open(WAVE_FOLDER + wave_filename, 'wb') as wavfile:
-        wavfile.setparams((num_channels, sample_width, SAMPLING_FREQUENCY, num_frames, 'NONE', 'NONE'))
-        wavfile.writeframes(bytes(data))
+    with wave.open(WAVE_FOLDER + test + wave_filename , 'wb') as wavefile:
+        wavefile.setparams((num_channels, sample_width, SAMPLING_FREQUENCY, num_frames, 'NONE', 'NONE'))
+        wavefile.writeframes(bytes(data))
+        
+    # with scipy : equivalent + simpler
+    # left_channel = convert_data[0::2]
+    # right_channel = convert_data[1::2]
+    # stereo_output=np.vstack((left_channel, right_channel)).T
+    # stereo_output = np.array(convert_data)
+    # wavfile.write('stereo_audio.wav', SAMPLING_FREQUENCY, stereo_output.astype(np.int16))
+
 
     #Store bme sensor data and timestamp as pandas dataframe
     df = pd.DataFrame(bme_sensor_data, columns=['humidity', 'pressure', 'temperature'])

@@ -1,3 +1,24 @@
+"""""
+ *  \brief     tf_to_tflite.py
+ *  \author    Jonathan Reymond
+ *  \version   1.0
+ *  \date      2023-02-14
+ *  \pre       None
+ *  \copyright (c) 2022 CSEM
+ *
+ *   CSEM S.A.
+ *   Jaquet-Droz 1
+ *   CH-2000 Neuchâtel
+ *   http://www.csem.ch
+ *
+ *
+ *   THIS PROGRAM IS CONFIDENTIAL AND CANNOT BE DISTRIBUTED
+ *   WITHOUT THE CSEM PRIOR WRITTEN AGREEMENT.
+ *
+ *   CSEM is the owner of this source code and is authorised to use, to modify
+ *   and to keep confidential all new modifications of this code.
+ *
+ """
 
 import os
 import shutil
@@ -14,34 +35,77 @@ import dataloader
 #Note : currently using the ventilator dataset
 from dataloader_vent import extract_dataset
 
-
+from imblearn.under_sampling import RandomUnderSampler
+import copy
 
 with_optim = True
 with_quant = True
 
 
 
-def representative_data_gen(X, num_samples=-1, seed=1):
-    '''Creates a representative dataset generator to be used in the tflite interpreter creation
+# def representative_data_gen(X, num_samples=-1, seed=1):
+#     '''Creates a representative dataset generator to be used in the tflite interpreter creation
+
+#     Args:
+#         X (numpy array): dataset that was used for the machine learning part
+#         num_samples (int, optional): number of samples returned. Defaults to -1: all the dataset
+#         seed (int, optional): seed used for shuffling the dataset. Defaults to 1.
+
+#     Yields:
+#         _type_: _description_
+#     '''
+#     size = len(X)
+#     arr = np.arange(size)
+#     np.random.seed(seed)
+#     np.random.shuffle(arr)
+#     for idx in arr[:num_samples]:
+#         # need reshape (batch=1, size=32000, channel=1)
+#         yield [np.array(X[idx], dtype=np.float32).reshape((1,-1, 1))]
+  
+  
+def representative_data_gen2(X, labels, num_samples=5000, seed=1):
+    '''Creates a balanced representative dataset generator to be used in the tflite interpreter creation.
+    Do not support multi-labels
 
     Args:
-        X (numpy array): dataset that was used for the machine learning part
-        num_samples (int, optional): number of samples returned. Defaults to -1: all the dataset
-        seed (int, optional): seed used for shuffling the dataset. Defaults to 1.
+        X (np array): dataset that was used for the machine learning part
+        labels (np array): labels array
+        num_samples (int, optional): number of samples in the dataset taken. Defaults to 5000.
+        seed (int, optional): seed for random sampling. Defaults to 1.
 
-    Yields:
-        _type_: _description_
+    Returns:
+        generator: generator of the representative dataset
     '''
-    size = len(X)
-    arr = np.arange(size)
-    np.random.seed(seed)
-    np.random.shuffle(arr)
-    for idx in arr[:num_samples]:
-        # need reshape (batch=1, size=32000, channel=1)
-        yield [np.array(X[idx], dtype=np.float32).reshape((1,-1, 1))]
-       
+    labels = np.argmax(labels, axis=1)
+    counter_labels = Counter(labels)
+    labels_keys = counter_labels.keys()
+    num_classes = len(labels_keys)
+    minor_class, minor_count = counter_labels.most_common(None)[-1]
+    num_per_class = int(num_samples / num_classes)
+    if minor_count < num_per_class:
+        print('not enough samples for class', minor_class)
+        print('taking', minor_count, 'per class instead of', num_per_class)
+        num_per_class = minor_count
+    
 
-def create_tflite_interpreter(export_dir, with_optimization, with_quantization, store_path=None, X=None):
+    sampling_dict = {}
+    for class_label in labels_keys:
+        sampling_dict.update({class_label : num_per_class}) 
+
+    under_sampler = RandomUnderSampler(random_state=seed, sampling_strategy=sampling_dict)
+
+    # transform the dataset
+    original_shape = X[0].shape
+    print(original_shape)
+    X, labels  = under_sampler.fit_resample([x.flatten() for x in X], labels)
+
+    X = np.asarray([x.reshape(original_shape) for x in np.asarray(X)])
+    print('Resampled dataset shape %s' % Counter(labels)) 
+    
+    return ([np.array(x, dtype=np.float32).reshape((1, 1, -1, 1))] for x in X)
+
+
+def create_tflite_interpreter(export_dir, with_optimization, with_quantization, store_path=None, X=None, labels=None):
     '''Creates the tflite interpreter from a tensorflow model
 
     Args:
@@ -55,21 +119,41 @@ def create_tflite_interpreter(export_dir, with_optimization, with_quantization, 
         dict: the tflite interpreter, as well as the input, output pointers
     '''
     converter = tf.lite.TFLiteConverter.from_saved_model(export_dir)
+    debugger = None
     if with_optimization:
+        print('with weights compression')
         converter.optimizations = [tf.lite.Optimize.DEFAULT]
+        
     if with_quantization:
-        converter.representative_dataset = lambda : representative_data_gen(X)
+        print('with only unit8 computation')
+        
+        converter.representative_dataset = lambda : representative_data_gen2(X, labels)
+        
+
         converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8] 
+        
+        # converter.inference_input_type = tf.uint8
+        # converter.inference_output_type = tf.uint8
+        
     tflite_model = converter.convert()
+    
+    debugger = tf.lite.experimental.QuantizationDebugger(
+                    converter=converter, debug_dataset=(lambda : representative_data_gen2(X, labels)))
     if store_path is not None:
         tflite_model_file = pathlib.Path(store_path)
         tflite_model_file.write_bytes(tflite_model)
 
     interpreter = tf.lite.Interpreter(model_content=tflite_model)
     interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()[0]['index']
-    output_details = interpreter.get_output_details()[0]['index']
-    return {'interpreter': interpreter, 'input':input_details, 'output':output_details}
+    #multiple inputs
+    input_details = []
+    for input in interpreter.get_input_details():  
+        input_details.append(input)
+    output_details = []
+    for output in interpreter.get_output_details():
+        output_details.append(output)
+
+    return {'interpreter': interpreter, 'input':input_details, 'output':output_details}, debugger
 
 
 def get_tflite_output(interpreter_dict, test_sample):
@@ -136,7 +220,6 @@ def tflite_to_cc(to_module=False):
 
 
 
-
 if __name__ == '__main__':
 
     tflite_folder = os.path.dirname(TFLITE_FILEPATH)
@@ -145,10 +228,15 @@ if __name__ == '__main__':
     
 
     # X, labels = get_rain_dataset(MERGE_BUCKET_SIZE, LOWPASS_FREQ, RESAMPLE_FREQUENCY, TO_MFCC, INDEX_HOURS, compress_labels, SPLIT_FACTOR)
-    X, labels = dataloader.get_dataset(split_factor=SPLIT_FACTOR, type_labels=TYPE_LABELS)
+    # X, labels = dataloader.get_dataset(split_factor=SPLIT_FACTOR)
+    num_classes, num_splits, inputs, labels, audio_length, sensor_shape = dataloader.prepare_dataset(TYPE_LABELS, TYPE_INPUTS, SPLIT_FACTOR,
+                                                                                              timesteps=None, step_size=None, test_size=0.01, validation_size=0.01)
+    X = inputs[0]['train']['audio']
+    # print(X)
+    labels = labels[0]['train']['rain']
 
     tflite_interp_quant = create_tflite_interpreter(MODEL_FILEPATH, with_optimization=with_optim, with_quantization=with_quant, 
-                                                X=X, store_path= TFLITE_FILEPATH)
+                                                X=X, labels=labels, store_path= TFLITE_FILEPATH)
 
     tflite_to_cc(to_module=False)
 

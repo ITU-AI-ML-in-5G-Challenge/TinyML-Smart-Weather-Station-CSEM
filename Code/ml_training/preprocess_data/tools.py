@@ -1,8 +1,8 @@
 """""
- *  \brief     Python script used for ML training
- *  \author    Jonathan Reymond, Robin Berguerand, Jona Beysens
+ *  \brief     tools.py
+ *  \author    Jonathan Reymond
  *  \version   1.0
- *  \date      2022-11-14
+ *  \date      2023-02-14
  *  \pre       None
  *  \copyright (c) 2022 CSEM
  *
@@ -19,7 +19,6 @@
  *   and to keep confidential all new modifications of this code.
  *
  """
- 
 import sys
 import numpy as np
 import pickle
@@ -249,4 +248,5 @@ def plot_metrics(x, axis=None, title=""):
         axis.set_xlabel('time')
         
     return m
+
 

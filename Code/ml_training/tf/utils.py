@@ -1,3 +1,24 @@
+"""""
+ *  \brief     utils.py
+ *  \author    Jonathan Reymond
+ *  \version   1.0
+ *  \date      2023-02-14
+ *  \pre       None
+ *  \copyright (c) 2022 CSEM
+ *
+ *   CSEM S.A.
+ *   Jaquet-Droz 1
+ *   CH-2000 Neuchâtel
+ *   http://www.csem.ch
+ *
+ *
+ *   THIS PROGRAM IS CONFIDENTIAL AND CANNOT BE DISTRIBUTED
+ *   WITHOUT THE CSEM PRIOR WRITTEN AGREEMENT.
+ *
+ *   CSEM is the owner of this source code and is authorised to use, to modify
+ *   and to keep confidential all new modifications of this code.
+ *
+ """
 
 from keras.callbacks import Callback
 import numpy as np
@@ -13,11 +34,25 @@ from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import OneHotEncoder
 from enum import Enum
 
+import keras.backend as K
+from itertools import product
+
+from tensorflow.python.profiler.model_analyzer import profile
+from tensorflow.python.profiler.option_builder import ProfileOptionBuilder
+
+import sys
+import optuna
+
 
 class Labels(Enum):
-    RAIN = 0
-    WIND = 1
-    RAIN_WIND = 2
+    RAIN = ['rain']
+    WIND = ['wind']
+    RAIN_WIND = ['rain', 'wind']
+    
+class Inputs(Enum):
+    AUDIO = ['audio']
+    SENSOR = ['sensor']
+    AUDIO_SENSOR = ['audio', 'sensor']
 
 def one_hot_labels_to_arr(y_te, y_pred):
     return y_te.argmax(axis=1), y_pred.argmax(axis=1)
@@ -87,7 +122,7 @@ def to_one_hot(labels):
     
 
 
-def reformat_dataset(X, labels, type_labels):
+def reformat_dataset(X, labels):
     '''Reorganize dataset to be in right shape for the ML model:
         1. labels in one-hot encoding
         2. X add a dimension 
@@ -98,15 +133,12 @@ def reformat_dataset(X, labels, type_labels):
     Returns:
         _type_: X, labels formatted and the number of classes
     '''
-    if type_labels == Labels.RAIN_WIND:
-        rain_labels, wind_labels = labels
-        rain_labels, num_rain_classes = to_one_hot(rain_labels)
-        wind_labels, num_wind_classes = to_one_hot(wind_labels)
-        labels = np.concatenate((rain_labels, wind_labels), axis=1)
-        num_classes = [num_rain_classes, num_wind_classes]
-    else :
-        labels, num_classes = to_one_hot(labels)
-        num_classes = [num_classes]
+
+    rain_labels, wind_labels = labels
+    rain_labels, num_rain_classes = to_one_hot(rain_labels)
+    wind_labels, num_wind_classes = to_one_hot(wind_labels)
+    labels = np.concatenate((rain_labels, wind_labels), axis=1)
+    num_classes = dict(rain=num_rain_classes, wind=num_wind_classes)
 
     X = np.expand_dims(X, axis=-1)
 
@@ -114,10 +146,19 @@ def reformat_dataset(X, labels, type_labels):
 
 
 def separe_labels(labels, num_classes):
-    rain_labels = labels[:, :num_classes[0]]
-    wind_labels = labels[:, num_classes[0]:]
+    rain_labels = labels[:, :num_classes['rain']]
+    wind_labels = labels[:, num_classes['rain']:]
     return rain_labels, wind_labels
 
+def separe_labels_time_series(labels, num_classes):
+    rain_labels = []
+    wind_labels = []
+    for num_splits in range(len(labels)):
+        rain_labels.append(labels[num_splits][:, :num_classes['rain']])
+        wind_labels.append(labels[num_splits][:, num_classes['rain']:])
+    return rain_labels, wind_labels
+    
+    
 
 def output_to_pred(output):
     output = np.asarray(output)
@@ -130,23 +171,111 @@ def to_binary_labels(y_test, y_pred, threshold):
     y_test = (y_test > threshold).astype(np.int16)
     
     return y_test, y_pred
-
-        
+    
         
 class ConfusionMatrixCallback(tf.keras.callbacks.Callback):
-    def __init__(self, x_test, y_test_rain, y_test_wind):
+    def __init__(self, x_test, labels, output_names):
         self.x_test = x_test
-        self.y_test_rain = y_test_rain
-        self.y_test_wind = y_test_wind
+        self.labels = labels
+        self.output_names = output_names
 
     def on_epoch_end(self, epoch, logs=None):
-        # only for sequential model
-        output = self.model.predict(self.x_test, verbose=0)
+        outputs = self.model.predict(self.x_test, verbose=0)
+
+        if len(self.output_names) == 1:
+            outputs_dict = {self.output_names[0] : outputs}
+        else :
+            outputs_dict = {name: pred for name, pred in zip(self.output_names, outputs)}
         
-        y_pred_rain = output_to_pred(output[0])
-        print("Rain confusion matrix")
-        print(confusion_matrix(self.y_test_rain.argmax(axis=1), y_pred_rain.argmax(axis=1)))
+        for name, y_test in self.labels.items() : 
+            print(name, 'confusion matrix')
+            print(confusion_matrix(y_test.argmax(axis=1), outputs_dict[name].argmax(axis=1)))
+            
         
-        y_pred_wind = output_to_pred(output[1])
-        print("Wind confusion matrix")
-        print(confusion_matrix(self.y_test_wind.argmax(axis=1), y_pred_wind.argmax(axis=1)))
+       
+
+def weighted_categorical_crossentropy(target, output, weights_table):
+    weights_vect = weights_table.lookup(K.argmax(target, axis=1))
+    return K.categorical_crossentropy(target, output) * weights_vect
+
+
+
+def to_lookup_table(dictionnary):
+    return tf.lookup.StaticHashTable(
+        tf.lookup.KeyValueTensorInitializer(
+            list(dictionnary.keys()),
+            list(dictionnary.values()),
+            key_dtype=tf.int64,
+            value_dtype=tf.float32,
+        ),
+        default_value=-1)
+    
+    
+def get_flops(model):
+    batch_size = 1
+    inputs = [
+        tf.TensorSpec([batch_size] + inp.shape[1:], inp.dtype)
+        for inp in model.inputs
+    ]
+    
+    graph_info = profile(tf.function(model).get_concrete_function(inputs).graph,
+                        options=ProfileOptionBuilder.float_operation())
+    flops = graph_info.total_float_ops
+    return flops / 1e9
+
+
+class PrintCallback:
+    def __call__(self, study: optuna.study.Study, trial: optuna.trial.FrozenTrial) -> None:
+        print()
+        print("Trial number: ",trial.number)
+        
+        if trial.state == optuna.trial.TrialState.PRUNED:      
+            print('Pruned')
+        else :
+            print("  Value: ", trial.value)
+            print("  Params: ", trial.params)
+
+        trial_best = study.best_trial
+        print("Best trial:", trial_best.number)
+        print("  Value: ", trial_best.value)
+        print("  Params: ", trial_best.params)
+        print('---------------------------------')
+        print()
+
+# def get_flops(model) -> float:
+#     """
+#     Calculate FLOPS [GFLOPs] for a tf.keras.Model or tf.keras.Sequential model
+#     in inference mode. It uses tf.compat.v1.profiler under the hood.
+#     """
+
+#     from tensorflow.python.framework.convert_to_constants import (
+#         convert_variables_to_constants_v2_as_graph,
+#     )
+
+#     # Compute FLOPs for one sample
+#     batch_size = 1
+#     inputs = [
+#         tf.TensorSpec([batch_size] + inp.shape[1:], inp.dtype)
+#         for inp in model.inputs
+#     ]
+
+#     # convert tf.keras model into frozen graph to count FLOPs about operations used at inference
+#     real_model = tf.function(model).get_concrete_function(inputs)
+#     frozen_func, _ = convert_variables_to_constants_v2_as_graph(real_model)
+
+#     # Calculate FLOPs with tf.profiler
+#     run_meta = tf.compat.v1.RunMetadata()
+#     opts = (
+#         tf.compat.v1.profiler.ProfileOptionBuilder(
+#             tf.compat.v1.profiler.ProfileOptionBuilder().float_operation()
+#         )
+#         .with_empty_output()
+#         .build()
+#     )
+
+#     flops = tf.compat.v1.profiler.profile(
+#         graph=frozen_func.graph, run_meta=run_meta, cmd="scope", options=opts
+#     )
+#     # convert to GFLOPs
+#     return flops.total_float_ops / 1e9
+

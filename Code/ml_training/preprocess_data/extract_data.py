@@ -1,8 +1,8 @@
 """""
- *  \brief     Python script used for ML training
- *  \author    Jonathan Reymond, Robin Berguerand, Jona Beysens
+ *  \brief     extract_data.py
+ *  \author    Jonathan Reymond
  *  \version   1.0
- *  \date      2022-11-14
+ *  \date      2023-02-14
  *  \pre       None
  *  \copyright (c) 2022 CSEM
  *
@@ -19,8 +19,7 @@
  *   and to keep confidential all new modifications of this code.
  *
  """
- 
-import numpy as np
+ import numpy as np
 import pandas as pd
 import os
 import wave

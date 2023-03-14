@@ -19,7 +19,6 @@
  *   and to keep confidential all new modifications of this code.
  *
  """
- 
 import glob
 import numpy as np
 
@@ -28,7 +27,7 @@ import numpy as np
 #### constants to adapt ####
 ############################
 #End of recording, for creating the folder
-DATE_RECORDING = '9_11_2022'
+DATE_RECORDING = 'test' #'9_11_2022'
 #recording of interest (to crop the original recording)
 #format : "year-month-day hour:minutes:seconds"
 REAL_START_DATE = None
@@ -81,6 +80,11 @@ def initialize_global_constants():
         MIC_START_DATE = '2022-11-08 14:01:15'
         STATION_START_DATE = '2022-11-08 13:59:24'
 
+    elif DATE_RECORDING == 'test':
+        MIC_ID = 5924
+        MIC_NUM_HOURS = 1
+        MIC_PREFIX = 'data_seq_19_run_'
+        
     else :
         raise NotImplementedError
 
